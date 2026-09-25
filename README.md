@@ -22,6 +22,19 @@ python -m venv .venv
 Open http://localhost:8000 — **Map** shows all drivers' routes (current vs optimized), **Edit routes** edits drivers,
 waves, stops, pickup links and locations. On first run the database (`data/app.db`) is seeded from `data/route_sample.json`.
 
+## Deploy (Azure)
+
+Container App `routeapp` in `marinar-rg` / `marinar-env`, behind Easy Auth (Entra app "RoutePlanner (routeapp)"),
+custom domain `routeplanner.marinar.is`. The SQLite DB lives on Azure Files share `routeapp` (storage `marinarplannerdata`,
+env storage `routeappdata`) mounted at `/data`; keep max replicas at 1.
+
+```bash
+az acr build --registry marinarplanner --image routeapp:latest --no-logs .
+az containerapp update -n routeapp -g marinar-rg --image marinarplanner.azurecr.io/routeapp:latest --revision-suffix v$(date +%Y%m%d%H%M)
+```
+
+From Git Bash, prefix commands whose values start with `/` with `MSYS_NO_PATHCONV=1` (e.g. `DB_PATH=/data/app.db`).
+
 ## Layout
 
 | Path | What |
