@@ -3,6 +3,7 @@
 Run:  .venv\\Scripts\\python -m uvicorn app.main:app --port 8000
 """
 import json
+import os
 import re
 import sqlite3
 import unicodedata
@@ -17,7 +18,9 @@ from pydantic import BaseModel
 from . import routing
 
 ROOT = Path(__file__).resolve().parent.parent
-DB = ROOT / "data" / "app.db"
+# In Azure, DB_PATH points at the mounted Azure Files share so data survives restarts/redeploys.
+DB = Path(os.environ.get("DB_PATH", ROOT / "data" / "app.db"))
+DB.parent.mkdir(parents=True, exist_ok=True)
 WAVE_COLORS = ["#e6b800", "#22a822", "#e0147a", "#3b82f6", "#f97316"]
 
 app = FastAPI(title="Route optimizer")

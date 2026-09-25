@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.claude/
+data/app.db
+route_map.html
+prototype.py
+map_template.html
