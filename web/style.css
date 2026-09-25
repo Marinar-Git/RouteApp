@@ -1,0 +1,30 @@
+:root { --bg:#1f3a8a; --panel:#243f94; --card:#ffffff0f; --line:#ffffff22; --text:#fff; --muted:#b8c4ea;
+        --accent:#3b82f6; --danger:#f87171; --ok:#4ade80; }
+* { box-sizing:border-box; }
+html, body { height:100%; }
+body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); display:flex; flex-direction:column; }
+nav.top { display:flex; align-items:center; gap:4px; padding:8px 14px; background:#172f73; border-bottom:1px solid var(--line); }
+nav.top b { margin-right:14px; }
+nav.top a { color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:6px; font-weight:600; font-size:14px; }
+nav.top a.on, nav.top a:hover { background:var(--line); color:#fff; }
+main { flex:1; display:flex; min-height:0; }
+.map { flex:1; min-height:300px; }
+button, .btn { font:inherit; font-size:13px; font-weight:600; border:0; border-radius:6px; padding:7px 12px; cursor:pointer;
+               background:var(--line); color:#fff; }
+button.primary { background:var(--accent); }
+button.danger { background:transparent; color:var(--danger); }
+button:disabled { opacity:.5; cursor:default; }
+input, select { font:inherit; font-size:13px; padding:6px 8px; border-radius:6px; border:1px solid var(--line);
+                background:#ffffff14; color:#fff; min-width:0; }
+select option { color:#000; }
+summary { cursor:pointer; list-style:none; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+summary::-webkit-details-marker { display:none; }
+summary::before { content:'▸'; color:var(--muted); transition:transform .15s; display:inline-block; }
+details[open] > summary::before { transform:rotate(90deg); }
+summary .meta { color:var(--muted); font-size:12px; font-weight:400; }
+.tag { display:block; font-size:11px; margin:1px 0 3px; }
+.tag.up { color:#fde68a; } .tag.down { color:#86efac; }
+.toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#111827; padding:10px 16px;
+         border-radius:8px; font-size:14px; z-index:9999; max-width:90vw; }
+.toast.err { background:#7f1d1d; }
+@media (max-width:760px) { main { flex-direction:column; } }

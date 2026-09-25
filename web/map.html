@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route Map</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="style.css">
+<style>
+  #side { width:380px; padding:16px; overflow:auto; background:var(--panel); }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tabs button { flex:1; padding:8px; }
+  .tabs button.on { background:var(--accent); }
+  .kpi { display:flex; gap:8px; margin-bottom:14px; }
+  .kpi div { flex:1; background:var(--card); border-radius:8px; padding:10px; }
+  .kpi b { display:block; font-size:20px; }
+  .kpi small { color:var(--muted); }
+  .save { color:var(--ok); font-size:12px; }
+  .driver { background:var(--card); border-radius:10px; padding:10px 12px; margin-bottom:10px; }
+  .driver > summary { font-size:16px; font-weight:700; }
+  .driver[open] > summary { margin-bottom:12px; }
+  .trip { margin-bottom:12px; border-left:4px solid; padding-left:10px; }
+  .trip > summary { font-size:14px; font-weight:600; }
+  .trip > summary .lbl { flex:1 1 auto; }
+  .trip ol { margin:4px 0 0; padding-left:18px; font-size:13px; color:var(--muted); }
+  .eye { margin-left:auto; background:none; padding:2px 4px; line-height:0; }
+  .eye:hover { background:var(--line); }
+  .eye.off { color:var(--muted); }
+  .hidden-route > summary .lbl, .trip.hidden-route > ol { opacity:.45; }
+  #status { color:var(--muted); font-size:13px; }
+  @media (max-width:760px) { #side { width:auto; max-height:45vh; } }
+</style>
+</head>
+<body>
+<nav class="top"><b>Route optimizer</b><a href="map.html" class="on">Map</a><a href="edit.html">Edit routes</a></nav>
+<main>
+  <div id="side">
+    <div class="tabs"><button data-p="current">Current</button><button data-p="optimized">Optimized</button></div>
+    <div class="kpi" id="kpi"></div>
+    <div id="status">Loading routes…</div>
+    <div id="trips"></div>
+  </div>
+  <div id="map" class="map"></div>
+</main>
+<script>
+const map = L.map('map').setView([64.13, -21.88], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+const base = L.layerGroup().addTo(map);
+const closed = new Set();   // collapsed sections, kept across Current/Optimized switches
+const hidden = new Set();   // waves hidden from the map, e.g. "3-w1"
+let waveLayers = {};        // wave key -> layer group
+let DATA, planKey = 'optimized', fitted = false;
+
+const EYE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M2 2l20 20"/></svg>';
+const eyeBtn = key => `<button class="eye" data-eye="${key}" title="Show/hide on map" aria-label="Show/hide on map"></button>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const name = k => esc(DATA.locations[k].name);
+
+function show() {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.p === planKey));
+  const sum = (p, f) => DATA.drivers.reduce((n, d) => n + d.plans[p][f], 0);
+  const km = sum(planKey, 'km'), min = sum(planKey, 'minutes');
+  const dKm = (sum('current', 'km') - km).toFixed(1), dMin = Math.round(sum('current', 'minutes') - min);
+  const opt = planKey === 'optimized';
+  document.getElementById('kpi').innerHTML =
+    `<div><small>Distance · all drivers</small><b>${km.toFixed(1)} km</b>${opt ? `<span class="save">−${dKm} km</span>` : ''}</div>
+     <div><small>Driving</small><b>${Math.round(min)} min</b>${opt ? `<span class="save">−${dMin} min</span>` : ''}</div>`;
+
+  base.clearLayers();
+  Object.values(waveLayers).forEach(g => map.removeLayer(g));
+  waveLayers = {};
+  const bounds = [];
+  document.getElementById('trips').innerHTML = DATA.drivers.map(d => {
+    const plan = d.plans[planKey];
+    const waves = plan.trips.map((t, ti) => {
+      const key = `${d.id}-w${ti}`, g = L.layerGroup();
+      waveLayers[key] = g;
+      if (t.geometry.length) L.polyline(t.geometry, { color: t.color, weight: 5, opacity: .85 }).addTo(g);
+      bounds.push(...t.geometry);
+      t.seq.slice(1, -1).forEach((k, i) => {
+        const l = DATA.locations[k];
+        L.marker([l.lat, l.lon], { icon: L.divIcon({ className: '', html:
+          `<div style="background:${t.color};color:#fff;border-radius:12px;padding:2px 7px;font:600 12px system-ui;border:2px solid #fff;white-space:nowrap">${i + 1}</div>` }) })
+          .bindTooltip(`${esc(d.driver)} · ${esc(t.label)} · stop ${i + 1}: ${esc(l.name)}`).addTo(g);
+      });
+      return `<details class="trip" data-key="${key}" style="border-color:${t.color}" ${closed.has(key) ? '' : 'open'}>
+        <summary><span class="lbl">${esc(t.label)}</span><span class="meta">${t.km} km · ${Math.round(t.minutes)} min · ${t.seq.length - 2} stops</span>${eyeBtn(key)}</summary>
+        <ol>${t.seq.slice(1, -1).map(k => {
+          const up = t.links.filter(l => l.pickup === k).map(l => name(l.drop));
+          const down = t.links.filter(l => l.drop === k).map(l => name(l.pickup));
+          return `<li>${name(k)}${up.length ? `<span class="tag up">↑ pickup for ${up.join(', ')}</span>` : ''}${down.length ? `<span class="tag down">↓ from ${down.join(', ')}</span>` : ''}</li>`;
+        }).join('')}</ol></details>`;
+    }).join('');
+    const stops = plan.trips.reduce((n, t) => n + t.seq.length - 2, 0), dk = `d${d.id}`;
+    return `<details class="driver" data-key="${dk}" ${closed.has(dk) ? '' : 'open'}>
+      <summary><span class="lbl">${esc(d.driver)}</span><span class="meta">${plan.trips.length} trips · ${stops} stops · ${plan.km} km</span>${eyeBtn(dk)}</summary>
+      ${waves}</details>`;
+  }).join('');
+
+  document.querySelectorAll('#trips details').forEach(el => el.addEventListener('toggle', () =>
+    el.open ? closed.delete(el.dataset.key) : closed.add(el.dataset.key)));
+  document.querySelectorAll('#trips .eye').forEach(b => b.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();  // don't collapse/expand the section
+    toggleHidden(b.dataset.eye);
+  }));
+  const hq = DATA.locations[DATA.depot];
+  L.circleMarker([hq.lat, hq.lon], { radius: 9, color: '#fff', fillColor: '#111', fillOpacity: 1 }).bindTooltip('HQ: ' + esc(hq.name)).addTo(base);
+  applyVisibility();
+  if (!fitted && bounds.length) { map.fitBounds(bounds, { padding: [30, 30] }); fitted = true; }
+}
+
+const wavesOf = dk => Object.keys(waveLayers).filter(k => k.startsWith(dk.slice(1) + '-'));
+function toggleHidden(key) {
+  if (key.startsWith('d')) {
+    const ws = wavesOf(key), allHidden = ws.every(w => hidden.has(w));
+    ws.forEach(w => allHidden ? hidden.delete(w) : hidden.add(w));
+  } else {
+    hidden.has(key) ? hidden.delete(key) : hidden.add(key);
+  }
+  applyVisibility();
+}
+function applyVisibility() {
+  Object.entries(waveLayers).forEach(([k, g]) => hidden.has(k) ? map.removeLayer(g) : g.addTo(map));
+  document.querySelectorAll('#trips .eye').forEach(b => {
+    const k = b.dataset.eye;
+    const off = k.startsWith('d') ? wavesOf(k).every(w => hidden.has(w)) : hidden.has(k);
+    b.innerHTML = off ? EYE_OFF : EYE;
+    b.classList.toggle('off', off);
+    b.closest('details').classList.toggle('hidden-route', off);
+  });
+}
+
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { planKey = b.dataset.p; show(); });
+fetch('/api/plan').then(async r => {
+  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  DATA = await r.json();
+  document.getElementById('status').textContent = DATA.drivers.length ? '' : 'No routes yet — add one on the Edit routes page.';
+  show();
+}).catch(e => document.getElementById('status').textContent = 'Could not load routes: ' + e.message);
+</script>
+</body>
+</html>

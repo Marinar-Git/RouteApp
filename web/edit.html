@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route Editor</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="style.css">
+<style>
+  #side { width:500px; display:flex; flex-direction:column; background:var(--panel); min-height:0; }
+  .tabs { display:flex; border-bottom:1px solid var(--line); }
+  .tabs button { flex:1; border-radius:0; background:none; padding:12px; color:var(--muted); border-bottom:2px solid transparent; }
+  .tabs button.on { color:#fff; border-bottom-color:var(--accent); }
+  .pane { flex:1; overflow:auto; padding:14px 16px; }
+  .pane[hidden] { display:none; }
+  .footer { display:flex; gap:8px; align-items:center; padding:10px 16px; border-top:1px solid var(--line); background:#1d3685; }
+  .footer[hidden] { display:none; }
+  .footer .dirty { color:#fde68a; font-size:12px; margin-right:auto; }
+  .footer .clean { color:var(--muted); font-size:12px; margin-right:auto; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+  .chips button.on { background:var(--accent); }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; font-size:12px; color:var(--muted); }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > input, .row > select { flex:1; }
+  .wave { background:var(--card); border-left:4px solid; border-radius:8px; padding:10px 12px; margin-bottom:12px; }
+  .wave-head { display:flex; gap:6px; align-items:center; margin-bottom:8px; }
+  .wave-head input[type=text] { flex:1; font-weight:600; }
+  .wave-head input[type=color] { width:32px; height:30px; padding:2px; }
+  .stops { list-style:none; margin:0 0 8px; padding:0; min-height:34px; border-radius:6px; }
+  .stops.over { outline:2px dashed var(--accent); }
+  .stop { display:flex; align-items:center; gap:8px; padding:6px 8px; margin-bottom:4px; background:#ffffff10; border-radius:6px; font-size:13px; }
+  .stop.dragging { opacity:.4; }
+  .stop .grip { cursor:grab; color:var(--muted); user-select:none; }
+  .stop .num { width:22px; height:22px; border-radius:11px; display:grid; place-items:center; font-size:11px; font-weight:700; flex:none; }
+  .stop .nm { flex:1; }
+  .stop button { padding:2px 6px; }
+  .sub { font-size:12px; color:var(--muted); margin:10px 0 6px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .link { display:flex; gap:6px; align-items:center; margin-bottom:6px; font-size:13px; }
+  .link select { flex:1; }
+  .problem { color:var(--danger); font-size:12px; margin:4px 0; }
+  .empty { color:var(--muted); font-size:13px; padding:10px 0; }
+  .loc-list { list-style:none; margin:0; padding:0; }
+  .loc-list li { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .loc-list li:hover, .loc-list li.on { background:#ffffff14; }
+  .loc-list .addr { color:var(--muted); font-size:12px; display:block; }
+  .badge { font-size:10px; font-weight:700; background:#111; padding:2px 6px; border-radius:4px; }
+  .locform { background:var(--card); border-radius:8px; padding:12px; margin-bottom:14px; }
+  .pick-on { background:#f59e0b !important; color:#111 !important; }
+  .hint { font-size:12px; color:var(--muted); }
+  @media (max-width:760px) { #side { width:auto; max-height:60vh; } }
+</style>
+</head>
+<body>
+<nav class="top"><b>Route optimizer</b><a href="map.html">Map</a><a href="edit.html" class="on">Edit routes</a></nav>
+<main>
+  <div id="side">
+    <div class="tabs"><button data-tab="routes" class="on">Routes</button><button data-tab="locations">Locations</button></div>
+    <div class="pane" id="routes"></div>
+    <div class="pane" id="locations" hidden></div>
+    <div class="footer" id="footer"></div>
+  </div>
+  <div id="map" class="map"></div>
+</main>
+<script>
+// ---------- state ----------
+let routes = [], locs = {}, selId = null, draft = null, dirty = false;
+let tab = 'routes', locSel = null, locDraft = null, picking = false;
+const COLORS = ['#e6b800', '#22a822', '#e0147a', '#3b82f6', '#f97316'];
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const clone = o => JSON.parse(JSON.stringify(o));
+const lname = k => locs[k]?.name ?? k;
+
+function toast(msg, err) {
+  const t = Object.assign(document.createElement('div'), { className: 'toast' + (err ? ' err' : ''), textContent: msg });
+  document.body.append(t);
+  setTimeout(() => t.remove(), err ? 6000 : 2500);
+}
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || r.statusText));
+  return data;
+}
+
+// ---------- map ----------
+const map = L.map('map').setView([64.13, -21.88], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+const pin = (color, text) => L.divIcon({ className: '', html:
+  `<div style="background:${color};color:#fff;border-radius:12px;padding:2px 7px;font:600 12px system-ui;border:2px solid #fff;white-space:nowrap">${text}</div>` });
+
+function drawMap(fit) {
+  layer.clearLayers();
+  const pts = [];
+  const depot = Object.values(locs).find(l => l.is_depot);
+  if (tab === 'routes' && draft) {
+    draft.trips.forEach(t => {
+      const seq = t.stops.map(s => locs[s.loc]).filter(Boolean);
+      const line = (depot ? [depot, ...seq, depot] : seq).map(l => [l.lat, l.lon]);
+      if (line.length > 1) L.polyline(line, { color: t.color, weight: 4, opacity: .8, dashArray: '6 6' }).addTo(layer);
+      seq.forEach((l, i) => { L.marker([l.lat, l.lon], { icon: pin(t.color, i + 1) }).bindTooltip(`${esc(t.label)} · ${i + 1}: ${esc(l.name)}`).addTo(layer); pts.push([l.lat, l.lon]); });
+    });
+  } else {
+    Object.values(locs).forEach(l => {
+      const on = locSel === l.key;
+      L.circleMarker([l.lat, l.lon], { radius: on ? 9 : 6, color: '#fff', weight: 2, fillColor: l.is_depot ? '#111' : on ? '#f59e0b' : '#3b82f6', fillOpacity: 1 })
+        .bindTooltip(esc(l.name)).on('click', () => { if (!picking) selectLoc(l.key); }).addTo(layer);
+      pts.push([l.lat, l.lon]);
+    });
+  }
+  if (tab === 'locations' && locDraft?.lat != null) {
+    L.marker([locDraft.lat, locDraft.lon], { draggable: true, icon: pin('#f59e0b', '◎') })
+      .on('dragend', e => { const p = e.target.getLatLng(); setLocPos(p.lat, p.lng); }).addTo(layer);
+  }
+  if (depot) {
+    L.circleMarker([depot.lat, depot.lon], { radius: 9, color: '#fff', fillColor: '#111', fillOpacity: 1 }).bindTooltip('HQ: ' + esc(depot.name)).addTo(layer);
+    pts.push([depot.lat, depot.lon]);
+  }
+  if (fit && pts.length) map.fitBounds(pts, { padding: [40, 40], maxZoom: 15 });
+}
+map.on('click', e => { if (picking) setLocPos(e.latlng.lat, e.latlng.lng); });
+
+// ---------- routes tab ----------
+function selectRoute(id) {
+  if (dirty && !confirm('Discard unsaved changes?')) return;
+  selId = id;
+  draft = id === 'new' ? { driver: `Driver ${routes.length + 1}`, trips: ['D0', 'D1', 'D2'].map((l, i) => ({ label: l, color: COLORS[i], stops: [], links: [] })) }
+                      : clone(routes.find(r => r.id === id));
+  setDirty(id === 'new');
+  renderRoutes(); drawMap(true);
+}
+function setDirty(v) { dirty = v; renderFooter(); }
+function change(redrawMap = true) { setDirty(true); renderRoutes(); if (redrawMap) drawMap(); }
+
+function problems(t) {
+  const pos = Object.fromEntries(t.stops.map((s, i) => [s.loc, i]));
+  return t.links.flatMap(l => {
+    if (!l.pickup || !l.drop) return ['Choose both a pickup and a drop'];
+    if (!(l.pickup in pos) || !(l.drop in pos)) return [`${lname(l.pickup)} → ${lname(l.drop)}: both must be stops in this wave`];
+    if (pos[l.pickup] > pos[l.drop]) return [`${lname(l.drop)} comes before its pickup ${lname(l.pickup)} — drag it lower or press Optimize`];
+    return [];
+  });
+}
+const allProblems = () => draft ? draft.trips.flatMap(problems) : [];
+
+function renderRoutes() {
+  const el = $('#routes');
+  const chips = routes.map(r => `<button data-route="${r.id}" class="${r.id === selId ? 'on' : ''}">${esc(r.driver)}</button>`).join('')
+    + `<button data-route="new" class="${selId === 'new' ? 'on' : ''}">+ New driver</button>`;
+  if (!draft) { el.innerHTML = `<div class="chips">${chips}</div><div class="empty">Pick a driver to edit, or add a new one.</div>`; bindRoutes(); return; }
+  const locOpts = (sel, only) => `<option value="">— choose —</option>` + (only ?? Object.keys(locs))
+    .sort((a, b) => lname(a).localeCompare(lname(b)))
+    .map(k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(lname(k))}</option>`).join('');
+  el.innerHTML = `<div class="chips">${chips}</div>
+    <label class="field">Driver / route name<input id="driver" type="text" value="${esc(draft.driver)}"></label>
+    ${draft.trips.map((t, wi) => {
+      const inWave = t.stops.map(s => s.loc);
+      const available = Object.keys(locs).filter(k => !inWave.includes(k) && !locs[k].is_depot);
+      return `<div class="wave" style="border-color:${t.color}" data-wave="${wi}">
+        <div class="wave-head">
+          <input type="text" value="${esc(t.label)}" data-act="label" aria-label="Wave name">
+          <input type="color" value="${t.color}" data-act="color" aria-label="Wave colour">
+          <button data-act="del-wave" class="danger" title="Remove wave">✕</button>
+        </div>
+        <ul class="stops" data-wave="${wi}">
+          ${t.stops.map((s, si) => {
+            const up = t.links.filter(l => l.pickup === s.loc && l.drop).map(l => esc(lname(l.drop)));
+            const down = t.links.filter(l => l.drop === s.loc && l.pickup).map(l => esc(lname(l.pickup)));
+            return `<li class="stop" draggable="true" data-wave="${wi}" data-stop="${si}">
+              <span class="grip" aria-hidden="true">⋮⋮</span>
+              <span class="num" style="background:${t.color}">${si + 1}</span>
+              <span class="nm">${esc(lname(s.loc))}${up.length ? `<span class="tag up">↑ pickup for ${up.join(', ')}</span>` : ''}${down.length ? `<span class="tag down">↓ from ${down.join(', ')}</span>` : ''}</span>
+              <button class="danger" data-act="del-stop" data-stop="${si}" title="Remove stop">✕</button></li>`;
+          }).join('') || '<li class="empty">No stops yet</li>'}
+        </ul>
+        <div class="row"><select data-act="add-stop" aria-label="Add stop">${`<option value="">+ Add stop…</option>` + available.sort((a, b) => lname(a).localeCompare(lname(b))).map(k => `<option value="${k}">${esc(lname(k))}</option>`).join('')}</select></div>
+        <div class="sub">Pickup → drop links</div>
+        ${t.links.map((l, li) => `<div class="link">
+            <select data-act="link-pickup" data-link="${li}" aria-label="Pickup">${locOpts(l.pickup, inWave)}</select><span>→</span>
+            <select data-act="link-drop" data-link="${li}" aria-label="Drop">${locOpts(l.drop, inWave)}</select>
+            <button class="danger" data-act="del-link" data-link="${li}" title="Remove link">✕</button></div>`).join('')}
+        ${problems(t).map(p => `<div class="problem">⚠ ${esc(p)}</div>`).join('')}
+        <button data-act="add-link" ${t.stops.length < 2 ? 'disabled' : ''}>+ Add link</button>
+      </div>`;
+    }).join('')}
+    <button data-act="add-wave">+ Add wave</button>`;
+  bindRoutes();
+}
+
+function bindRoutes() {
+  const el = $('#routes');
+  el.querySelectorAll('[data-route]').forEach(b => b.onclick = () => selectRoute(b.dataset.route === 'new' ? 'new' : +b.dataset.route));
+  if (!draft) return;
+  $('#driver').oninput = e => { draft.driver = e.target.value; setDirty(true); };
+  el.querySelectorAll('.wave').forEach(w => {
+    const t = draft.trips[+w.dataset.wave];
+    w.querySelector('[data-act=label]').oninput = e => { t.label = e.target.value; setDirty(true); };
+    w.querySelector('[data-act=color]').onchange = e => { t.color = e.target.value; change(); };
+    w.querySelector('[data-act=del-wave]').onclick = () => {
+      if (t.stops.length && !confirm(`Remove ${t.label} and its ${t.stops.length} stops?`)) return;
+      draft.trips.splice(+w.dataset.wave, 1); change();
+    };
+    w.querySelector('[data-act=add-stop]').onchange = e => { if (e.target.value) { t.stops.push({ loc: e.target.value }); change(); } };
+    w.querySelectorAll('[data-act=del-stop]').forEach(b => b.onclick = () => {
+      const [s] = t.stops.splice(+b.dataset.stop, 1);
+      t.links = t.links.filter(l => l.pickup !== s.loc && l.drop !== s.loc);
+      change();
+    });
+    w.querySelector('[data-act=add-link]').onclick = () => { t.links.push({ pickup: '', drop: '' }); change(false); };
+    w.querySelectorAll('[data-act=del-link]').forEach(b => b.onclick = () => { t.links.splice(+b.dataset.link, 1); change(false); });
+    w.querySelectorAll('[data-act=link-pickup]').forEach(s => s.onchange = () => { t.links[+s.dataset.link].pickup = s.value; change(false); });
+    w.querySelectorAll('[data-act=link-drop]').forEach(s => s.onchange = () => { t.links[+s.dataset.link].drop = s.value; change(false); });
+  });
+  el.querySelector('[data-act=add-wave]').onclick = () => {
+    const i = draft.trips.length;
+    draft.trips.push({ label: `D${i}`, color: COLORS[i % COLORS.length], stops: [], links: [] }); change();
+  };
+  bindDrag(el);
+}
+
+// Drag stops to reorder within a wave, or move them to another wave.
+let drag = null;
+function bindDrag(el) {
+  el.querySelectorAll('.stop').forEach(li => {
+    li.ondragstart = e => { drag = { wave: +li.dataset.wave, stop: +li.dataset.stop }; li.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; };
+    li.ondragend = () => { li.classList.remove('dragging'); drag = null; };
+  });
+  el.querySelectorAll('.stops').forEach(ul => {
+    ul.ondragover = e => { if (drag) { e.preventDefault(); ul.classList.add('over'); } };
+    ul.ondragleave = () => ul.classList.remove('over');
+    ul.ondrop = e => {
+      e.preventDefault(); ul.classList.remove('over');
+      if (!drag) return;
+      const to = +ul.dataset.wave, from = draft.trips[drag.wave], target = draft.trips[to];
+      const rows = [...ul.querySelectorAll('.stop:not(.dragging)')];
+      let at = rows.findIndex(r => e.clientY < r.getBoundingClientRect().top + r.offsetHeight / 2);
+      at = at < 0 ? rows.length : +rows[at].dataset.stop;
+      const stop = from.stops[drag.stop];
+      if (to !== drag.wave && target.stops.some(s => s.loc === stop.loc)) { toast(`${lname(stop.loc)} is already in ${target.label}`, true); return; }
+      from.stops.splice(drag.stop, 1);
+      if (to === drag.wave && at > drag.stop) at--;
+      target.stops.splice(at, 0, stop);
+      if (to !== drag.wave) from.links = from.links.filter(l => l.pickup !== stop.loc && l.drop !== stop.loc);
+      change();
+    };
+  });
+}
+
+function payload() {
+  return { driver: draft.driver.trim() || 'Driver', trips: draft.trips.map(t => ({ ...t, links: t.links.filter(l => l.pickup && l.drop) })) };
+}
+async function saveRoute() {
+  if (allProblems().length) { toast('Fix the warnings in red before saving', true); return; }
+  try {
+    const saved = selId === 'new' ? await api('POST', '/api/routes', payload()) : await api('PUT', `/api/routes/${selId}`, payload());
+    routes = selId === 'new' ? [...routes, saved] : routes.map(r => r.id === saved.id ? saved : r);
+    selId = saved.id; draft = clone(saved); setDirty(false); renderRoutes();
+    toast('Saved');
+  } catch (e) { toast(e.message, true); }
+}
+async function optimizeRoute() {
+  const btn = $('#opt'); btn.disabled = true; btn.textContent = 'Optimizing…';
+  try {
+    const res = await api('POST', '/api/optimize', payload());
+    const changed = res.trips.some((t, i) => t.stops.map(s => s.loc).join() !== draft.trips[i].stops.map(s => s.loc).join());
+    draft.trips.forEach((t, i) => t.stops = res.trips[i].stops);
+    if (changed) { change(); toast('Stops re-ordered — review, then Save'); } else toast('Already the best order');
+  } catch (e) { toast(e.message, true); }
+  renderFooter();
+}
+async function deleteRoute() {
+  if (!confirm(`Delete ${draft.driver}'s route? This cannot be undone.`)) return;
+  if (selId !== 'new') await api('DELETE', `/api/routes/${selId}`);
+  routes = routes.filter(r => r.id !== selId);
+  selId = null; draft = null; setDirty(false); renderRoutes(); drawMap();
+}
+
+// ---------- locations tab ----------
+function selectLoc(key) {
+  locSel = key; picking = false;
+  locDraft = key === 'new' ? { name: '', address: '', plus_code: '', lat: null, lon: null, is_depot: false } : clone(locs[key]);
+  renderLocations(); drawMap();
+  if (locDraft.lat != null) map.panTo([locDraft.lat, locDraft.lon]);
+}
+function setLocPos(lat, lon) { locDraft.lat = +lat.toFixed(6); locDraft.lon = +lon.toFixed(6); locDraft.moved = true; renderLocations(); drawMap(); }
+
+function renderLocations() {
+  const el = $('#locations');
+  const list = Object.values(locs).sort((a, b) => b.is_depot - a.is_depot || a.name.localeCompare(b.name));
+  const form = locDraft ? `<div class="locform">
+      <label class="field">Name<input id="l-name" type="text" value="${esc(locDraft.name)}"></label>
+      <label class="field">Address<input id="l-address" type="text" value="${esc(locDraft.address)}" placeholder="Skeifan 19, 108 Reykjavík"></label>
+      <label class="field">…or plus code<input id="l-plus" type="text" value="${esc(locDraft.plus_code)}" placeholder="43QF+PQ7"></label>
+      <div class="row" style="margin-bottom:10px">
+        <button id="l-pick" class="${picking ? 'pick-on' : ''}">${picking ? 'Click the map…' : '📍 Set on map'}</button>
+        <span class="hint">${locDraft.lat != null ? `${locDraft.lat.toFixed(5)}, ${locDraft.lon.toFixed(5)} — drag the pin to adjust` : 'Found from the address when you save'}</span>
+      </div>
+      <label class="row" style="font-size:13px;margin-bottom:12px"><input id="l-depot" type="checkbox" ${locDraft.is_depot ? 'checked' : ''} style="flex:none"> Depot / HQ (routes start and end here)</label>
+      <div class="row"><button class="primary" id="l-save">${locSel === 'new' ? 'Add location' : 'Save location'}</button>
+        <button id="l-cancel">Cancel</button><span style="flex:1"></span>
+        ${locSel !== 'new' ? '<button class="danger" id="l-del">Delete</button>' : ''}</div>
+    </div>` : '';
+  el.innerHTML = `<div class="row" style="margin-bottom:12px"><button class="primary" id="l-new">+ New location</button><span class="hint">${list.length} locations</span></div>
+    ${form}
+    <ul class="loc-list">${list.map(l => `<li data-key="${l.key}" class="${l.key === locSel ? 'on' : ''}">
+      <span style="flex:1">${esc(l.name)}<span class="addr">${esc(l.address || l.plus_code || `${l.lat.toFixed(4)}, ${l.lon.toFixed(4)}`)}</span></span>
+      ${l.is_depot ? '<span class="badge">HQ</span>' : ''}</li>`).join('')}</ul>`;
+  $('#l-new').onclick = () => selectLoc('new');
+  el.querySelectorAll('.loc-list li').forEach(li => li.onclick = () => selectLoc(li.dataset.key));
+  if (!locDraft) return;
+  const bind = (id, f) => $(id).oninput = e => { locDraft[f] = e.target.value; };
+  bind('#l-name', 'name'); bind('#l-address', 'address'); bind('#l-plus', 'plus_code');
+  $('#l-depot').onchange = e => locDraft.is_depot = e.target.checked;
+  $('#l-pick').onclick = () => { picking = !picking; renderLocations(); };
+  $('#l-cancel').onclick = () => { locSel = null; locDraft = null; picking = false; renderLocations(); drawMap(); };
+  $('#l-save').onclick = saveLoc;
+  $('#l-del') && ($('#l-del').onclick = deleteLoc);
+}
+async function saveLoc() {
+  const d = locDraft;
+  if (!d.name.trim()) { toast('Give the location a name', true); return; }
+  const body = { name: d.name.trim(), address: d.address?.trim() || null, plus_code: d.plus_code?.trim() || null, is_depot: !!d.is_depot };
+  if (d.moved || (locSel === 'new' && d.lat != null)) Object.assign(body, { lat: d.lat, lon: d.lon });
+  if (locSel === 'new' && !body.address && !body.plus_code && body.lat == null) { toast('Enter an address or plus code, or set it on the map', true); return; }
+  try {
+    const saved = await api(locSel === 'new' ? 'POST' : 'PUT', locSel === 'new' ? '/api/locations' : `/api/locations/${locSel}`, body);
+    if (saved.is_depot) Object.values(locs).forEach(l => l.is_depot = 0);
+    locs[saved.key] = saved;
+    toast(locSel === 'new' ? `Added ${saved.name}` : 'Saved');
+    selectLoc(saved.key);
+  } catch (e) { toast(e.message, true); }
+}
+async function deleteLoc() {
+  if (!confirm(`Delete ${locDraft.name}?`)) return;
+  try { await api('DELETE', `/api/locations/${locSel}`); delete locs[locSel]; locSel = null; locDraft = null; renderLocations(); drawMap(); }
+  catch (e) { toast(e.message, true); }
+}
+
+// ---------- shell ----------
+function renderFooter() {
+  const f = $('#footer');
+  if (tab !== 'routes' || !draft) { f.hidden = true; return; }
+  f.hidden = false;
+  f.innerHTML = `<span class="${dirty ? 'dirty' : 'clean'}">${dirty ? '● Unsaved changes' : 'All changes saved'}</span>
+    <button class="danger" id="del">Delete</button>
+    <button id="opt" title="Re-order stops in each wave for the shortest drive">⚡ Optimize order</button>
+    <button class="primary" id="save" ${dirty ? '' : 'disabled'}>Save</button>`;
+  $('#save').onclick = saveRoute; $('#opt').onclick = optimizeRoute; $('#del').onclick = deleteRoute;
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  tab = b.dataset.tab; picking = false;
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  $('#routes').hidden = tab !== 'routes'; $('#locations').hidden = tab !== 'locations';
+  tab === 'routes' ? renderRoutes() : renderLocations();
+  renderFooter(); drawMap(true);
+});
+window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+
+Promise.all([api('GET', '/api/routes'), api('GET', '/api/locations')]).then(([r, l]) => {
+  routes = r; locs = Object.fromEntries(l.map(x => [x.key, x]));
+  if (routes.length) selectRoute(routes[0].id); else { renderRoutes(); renderFooter(); drawMap(true); }
+}).catch(e => toast('Could not load: ' + e.message, true));
+</script>
+</body>
+</html>

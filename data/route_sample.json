@@ -1,0 +1,144 @@
+{
+  "name": "Sample route (1 driver, 3 trips)",
+  "driver": "Driver 1",
+  "depot": "marinar",
+  "locations": {
+    "marinar": {
+      "name": "Marinar EHF",
+      "address": "Viðarhöfði 3, 110 Reykjavík, Iceland"
+    },
+    "skeifan": {
+      "name": "Skeifan Krónan",
+      "address": "Skeifan 19, 108 Reykjavík, Iceland"
+    },
+    "grandi": {
+      "name": "Grandi Krónan",
+      "address": "Fiskislóð 15, 101 Reykjavík, Iceland"
+    },
+    "kringlan": {
+      "name": "Kringlan",
+      "address": "Kringlan 4, 103 Reykjavík, Iceland"
+    },
+    "tokyo_nyby": {
+      "name": "Tokyo Nýbýlavegur",
+      "address": "Nýbýlavegur 4, 200 Kópavogur, Iceland"
+    },
+    "hringbraut": {
+      "name": "Hringbraut Hospital",
+      "plus_code": "43QF+PQ7",
+      "plus_code_ref": [
+        64.1466,
+        -21.9426
+      ]
+    },
+    "hallveigar": {
+      "name": "Hallveigarstígur Krónan",
+      "address": "Hallveigarstígur 1, 101 Reykjavík, Iceland"
+    },
+    "austurver": {
+      "name": "Austurver Krónan",
+      "address": "Háaleitisbraut 68, 103 Reykjavík, Iceland"
+    }
+  },
+  "trips": [
+    {
+      "label": "D0 · fresh rice + empty containers",
+      "color": "#e6b800",
+      "stops": [
+        {
+          "order": "001",
+          "loc": "skeifan"
+        },
+        {
+          "order": "002",
+          "loc": "grandi"
+        },
+        {
+          "order": "003",
+          "loc": "kringlan"
+        }
+      ],
+      "links": []
+    },
+    {
+      "label": "D1 · first shipment + cooler pickups",
+      "color": "#22a822",
+      "stops": [
+        {
+          "order": "005",
+          "loc": "tokyo_nyby"
+        },
+        {
+          "order": "006",
+          "loc": "hringbraut"
+        },
+        {
+          "order": "007",
+          "loc": "hallveigar"
+        },
+        {
+          "order": "008",
+          "loc": "grandi"
+        },
+        {
+          "order": "009",
+          "loc": "skeifan"
+        },
+        {
+          "order": "010",
+          "loc": "austurver"
+        }
+      ],
+      "links": [
+        {
+          "pickup": "tokyo_nyby",
+          "drop": "hringbraut"
+        },
+        {
+          "pickup": "tokyo_nyby",
+          "drop": "hallveigar"
+        },
+        {
+          "pickup": "skeifan",
+          "drop": "austurver"
+        }
+      ]
+    },
+    {
+      "label": "D2 · evening shipment + last pickups",
+      "color": "#e0147a",
+      "stops": [
+        {
+          "order": "012",
+          "loc": "tokyo_nyby"
+        },
+        {
+          "order": "013",
+          "loc": "hallveigar"
+        },
+        {
+          "order": "014",
+          "loc": "grandi"
+        },
+        {
+          "order": "015",
+          "loc": "skeifan"
+        },
+        {
+          "order": "016",
+          "loc": "austurver"
+        }
+      ],
+      "links": [
+        {
+          "pickup": "tokyo_nyby",
+          "drop": "hallveigar"
+        },
+        {
+          "pickup": "skeifan",
+          "drop": "austurver"
+        }
+      ]
+    }
+  ]
+}
